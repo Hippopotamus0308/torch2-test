@@ -1,60 +1,79 @@
-# Test clip model
 import torch
-import torchvision
-import numpy as np
+import clip
 from PIL import Image
-import requests
+from torchvision.datasets import CIFAR100
+from torch.utils.data import DataLoader
+import numpy as np
+import os
+from tqdm import tqdm
+import time
 
-from transformers import CLIPProcessor, CLIPModel
+device = "cuda" if torch.cuda.is_available() else "cpu"
+model, preprocess = clip.load("ViT-B/32", device=device)
+opt_model = torch.compile(model)
 
-def timed(fn):
-    start = torch.cuda.Event(enable_timing=True)
-    end = torch.cuda.Event(enable_timing=True)
-    start.record()
-    result = fn()
-    end.record()
+
+def timed(model, printer):
+    #start = torch.cuda.Event(enable_timing=True)
+    #end = torch.cuda.Event(enable_timing=True)
+    #start.record()
+    start = time.time()
+    result = action(model)
+    end = time.time()
+    #end.record()
     torch.cuda.synchronize()
-    return result, start.elapsed_time(end) / 1000
+    #time_cnt = start.elapsed_time(end) / 1000
+    time_cnt = end - start
+    print(f"{printer}, time: {time_cnt}")
+    return result, time_cnt
 
-model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
-processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+# Download the dataset
+cifar100 = CIFAR100(root=os.path.expanduser("~/.cache"), download=True, train=False, transform=preprocess)
 
-url = "http://images.cocodataset.org/val2017/000000039769.jpg"
-image = Image.open(requests.get(url, stream=True).raw)
 
-inputs = processor(text=["a photo of a cat", "a photo of a dog"], images=image, return_tensors="pt", padding=True)
+def action(model_to_use):
+    all_features = []
+    all_labels = []   
+    with torch.no_grad():
+        for images, labels in tqdm(DataLoader(cifar100, batch_size=100)):
+            features = model_to_use.encode_image(images.to(device))
 
-# without torch.compile
-def time_without_opt():
-    times = []
+            all_features.append(features)
+            all_labels.append(labels)
+    return all_features
+    
+    # text_inputs = torch.cat([clip.tokenize(f"a photo of a {c}") for c in cifar100.classes]).to(device)
+    # for i in range(1000):
+    #     image, class_id = cifar100[i]
+    #     image_input = preprocess(image).unsqueeze(0).to(device)
+    #     with torch.no_grad():
+    #         image_features = model_to_use.encode_image(image_input)
+    #         text_features = model_to_use.encode_text(text_inputs)
+    # return text_inputs
+    
+def time_calculate():
+    time_default = []
+    time_opt = []
+
     for i in range(10):
-        outputs, time = timed(model(**inputs))
-        times.append(time)
-        logits_per_image = outputs.logits_per_image  # this is the image-text similarity score
-        probs = logits_per_image.softmax(dim=1)  # we can take the softmax to get the label probabilities
-    return times
-
-# with torch.compile
-def time_with_opt():
-    times = []
+        _, time = timed(model, "model")
+        time_default.append(time)
+    
     for i in range(10):
-        opt_model = torch.compile(model)
-        outputs, time = timed(opt_model(**inputs))
-        times.append(time)
-        logits_per_image = outputs.logits_per_image  # this is the image-text similarity score
-        probs = logits_per_image.softmax(dim=1)  # we can take the softmax to get the label probabilities
-    return times
+        _, time = timed(opt_model, "opt_model")
+        time_opt.append(time)
+    
+    time_median_default = np.median(time_default)
+    time_median_opt = np.median(time_opt)
+    time_mean_default = np.mean(time_default)
+    time_mean_opt = np.mean(time_opt)
+    print(f"default model: {time_default}")
+    print(f"opt model: {time_opt}")
+    print("--------------")
+    print(f"default model median time: {time_median_default}")
+    print(f"opt model median time: {time_median_opt}")
+    print("--------------")
+    print(f"default model mean time: {time_mean_default}")
+    print(f"opt model mean time: {time_mean_opt}")
 
-def time_compare(former_time, opt_time):
-    former_med = np.median(former_time)
-    opt_med = np.median(opt_time)
-    print(f"median time without opt: {former_med}")
-    print(f"median time with opt: {opt_med}")
-    speedup = former_med / opt_med
-    print(f"speed-up: {speedup}")
-
-def test():
-    former = time_without_opt()
-    torch._dynamo.reset()
-    opt = time_with_opt()
-    time_compare(former,opt)
+time_calculate()
