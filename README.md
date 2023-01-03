@@ -100,8 +100,15 @@ Data set:  CIFAR100, batch_size = 100
 | 10   | 13.128             | 13.478                |
 
 default model median time: 13.250109195709229
+
+
+
 opt model median time: 13.287628173828125
 
+
+
 default model mean time: 13.500806760787963
+
+
 
 opt model mean time: 15.088787126541138
